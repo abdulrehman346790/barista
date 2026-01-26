@@ -25,12 +25,9 @@ email-validator==2.1.0
 # Firebase
 firebase-admin==6.4.0
 
-# AI/ML - Huggingface
-huggingface-hub
-transformers
-torch
-numpy
-scipy
+# AI/ML - Huggingface (using Inference API, no local models)
+huggingface-hub>=0.20.0
+numpy>=1.24.0
 
 # HTTP Client
 httpx==0.26.0
