@@ -1,0 +1,40 @@
+# Render.com deployment configuration
+# Free tier: 750 hours/month, spins down after 15 min of inactivity
+
+services:
+  - type: web
+    name: basirat-api
+    env: python
+    region: oregon  # or choose closest to your users
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: SECRET_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: ENVIRONMENT
+        value: production
+      - key: DEBUG
+        value: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: UPSTASH_REDIS_URL
+        sync: false
+      - key: UPSTASH_REDIS_TOKEN
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+    healthCheckPath: /health
+    autoDeploy: true  # Deploy on every push to main branch
