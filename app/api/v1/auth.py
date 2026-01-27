@@ -36,34 +36,46 @@ async def register(
     """
     Register a new user.
     Sends OTP to phone for verification.
+    If user exists but is not verified, allow re-registration.
     """
     # Check if phone already exists
     result = await db.execute(select(User).where(User.phone == user_data.phone))
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Phone number already registered",
-        )
+    existing_user = result.scalar_one_or_none()
 
-    # Check if email already exists (if provided)
-    if user_data.email:
-        result = await db.execute(select(User).where(User.email == user_data.email))
-        if result.scalar_one_or_none():
+    if existing_user:
+        if existing_user.is_verified:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered",
+                detail="Phone number already registered. Please login instead.",
             )
+        else:
+            # User exists but not verified - update password and resend OTP
+            existing_user.password_hash = get_password_hash(user_data.password)
+            if user_data.email:
+                existing_user.email = user_data.email
+            await db.commit()
+            await db.refresh(existing_user)
+            user = existing_user
+    else:
+        # Check if email already exists (if provided)
+        if user_data.email:
+            result = await db.execute(select(User).where(User.email == user_data.email))
+            if result.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already registered",
+                )
 
-    # Create user
-    user = User(
-        phone=user_data.phone,
-        email=user_data.email,
-        password_hash=get_password_hash(user_data.password),
-        is_verified=False,
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
+        # Create new user
+        user = User(
+            phone=user_data.phone,
+            email=user_data.email,
+            password_hash=get_password_hash(user_data.password),
+            is_verified=False,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
 
     # Generate and store OTP
     otp = generate_otp()
