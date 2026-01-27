@@ -16,6 +16,11 @@ def init_firebase():
     if firebase_app is not None:
         return firebase_app
 
+    # Check if Firebase credentials are configured
+    if not settings.FIREBASE_PROJECT_ID or not settings.FIREBASE_CLIENT_EMAIL:
+        print("Firebase credentials not configured - skipping initialization")
+        return None
+
     # Create credentials from environment variables
     cred_dict = {
         "type": "service_account",
@@ -25,15 +30,19 @@ def init_firebase():
         "token_uri": "https://oauth2.googleapis.com/token",
     }
 
-    cred = credentials.Certificate(cred_dict)
-    firebase_app = firebase_admin.initialize_app(
-        cred,
-        {
-            "databaseURL": f"https://{settings.FIREBASE_PROJECT_ID}-default-rtdb.firebaseio.com"
-        },
-    )
-    print("Firebase initialized")
-    return firebase_app
+    try:
+        cred = credentials.Certificate(cred_dict)
+        firebase_app = firebase_admin.initialize_app(
+            cred,
+            {
+                "databaseURL": f"https://{settings.FIREBASE_PROJECT_ID}-default-rtdb.firebaseio.com"
+            },
+        )
+        print("Firebase initialized")
+        return firebase_app
+    except Exception as e:
+        print(f"Firebase initialization failed: {e}")
+        return None
 
 
 class FirebaseService:

@@ -5,8 +5,8 @@ import numpy as np
 from app.config import settings
 
 
-# Initialize Huggingface client
-client = InferenceClient(token=settings.HF_TOKEN)
+# Initialize Huggingface client (only if token is provided)
+client = InferenceClient(token=settings.HF_TOKEN) if settings.HF_TOKEN else None
 
 # Free Huggingface models
 HF_MODELS = {
@@ -25,6 +25,8 @@ class SentimentAnalyzer:
         Analyze sentiment of text.
         Returns score from -1.0 (negative) to 1.0 (positive).
         """
+        if client is None:
+            return 0.0  # Return neutral if AI not configured
         try:
             result = client.text_classification(
                 text[:512],  # Limit text length
@@ -59,6 +61,8 @@ class ToxicityDetector:
         Detect toxicity in text.
         Returns dict with is_toxic, score, and detected categories.
         """
+        if client is None:
+            return {"is_toxic": False, "toxicity_score": 0.0, "flags": []}
         try:
             result = client.text_classification(
                 text[:512],
@@ -86,6 +90,8 @@ class LanguageStyleMatcher:
 
     def get_embedding(self, text: str) -> List[float]:
         """Get text embedding."""
+        if client is None:
+            return []
         try:
             result = client.feature_extraction(
                 text[:1000],
@@ -151,6 +157,13 @@ class ConversationCoach:
         Generate contextual reply suggestions.
         Returns list of suggested replies with tone and explanation.
         """
+        # Return fallback suggestions if AI not configured
+        if client is None:
+            return [
+                {"text": "That's really interesting! Tell me more.", "tone": "curious", "explanation": "Shows genuine interest"},
+                {"text": "I appreciate you sharing that with me.", "tone": "friendly", "explanation": "Validates their openness"},
+                {"text": "What are your thoughts on...", "tone": "thoughtful", "explanation": "Keeps conversation flowing"},
+            ]
         try:
             # Build prompt
             conversation = "\n".join(

@@ -20,13 +20,13 @@ class Settings(BaseSettings):
     UPSTASH_REDIS_URL: str
     UPSTASH_REDIS_TOKEN: str
 
-    # Firebase
-    FIREBASE_PROJECT_ID: str
-    FIREBASE_PRIVATE_KEY: str
-    FIREBASE_CLIENT_EMAIL: str
+    # Firebase (optional - app works without it for basic testing)
+    FIREBASE_PROJECT_ID: str = ""
+    FIREBASE_PRIVATE_KEY: str = ""
+    FIREBASE_CLIENT_EMAIL: str = ""
 
-    # Huggingface
-    HF_TOKEN: str
+    # Huggingface (optional - AI features disabled if not set)
+    HF_TOKEN: str = ""
 
     # JWT Settings
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
