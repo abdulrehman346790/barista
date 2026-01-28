@@ -10,6 +10,7 @@ from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime
 from uuid import UUID as PyUUID
+import traceback
 
 from app.db.session import get_db
 from app.core.dependencies import get_current_verified_user
@@ -33,7 +34,17 @@ def model_to_dict(obj) -> dict:
     """Convert SQLAlchemy model to dict without internal attributes."""
     if obj is None:
         return None
-    return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+    result = {}
+    for c in obj.__table__.columns:
+        val = getattr(obj, c.name)
+        # Convert UUID and datetime to string for JSON serialization
+        if hasattr(val, 'hex'):  # UUID
+            result[c.name] = str(val)
+        elif hasattr(val, 'isoformat'):  # datetime
+            result[c.name] = val.isoformat()
+        else:
+            result[c.name] = val
+    return result
 
 
 # ================== Pydantic Schemas ==================
@@ -78,11 +89,20 @@ async def ask_ai_coach(
     Ask the AI coach a private question.
     This is the @AI mention handler - response is PRIVATE to the asking user only.
     """
+    # Convert match_id to UUID
+    try:
+        match_uuid = PyUUID(request.match_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid match_id format. Must be a valid UUID.",
+        )
+
     # Verify user is part of this match
     match_result = await db.execute(
         select(Match).where(
             and_(
-                Match.id == PyUUID(request.match_id),
+                Match.id == match_uuid,
                 or_(
                     Match.user1_id == current_user.id,
                     Match.user2_id == current_user.id,
@@ -131,6 +151,8 @@ async def ask_ai_coach(
         return CoachResponse(response=response)
 
     except Exception as e:
+        print(f"AI Coach Error: {str(e)}")
+        print(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"AI Coach error: {str(e)}",
