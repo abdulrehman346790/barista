@@ -78,7 +78,8 @@ async def get_coach_response(
     conversation: list,
     question: str,
     user_profile: dict = None,
-    match_profile: dict = None
+    match_profile: dict = None,
+    coach_history: list = None
 ) -> str:
     """
     Get personalized coaching response for a user's question.
@@ -87,25 +88,36 @@ async def get_coach_response(
         user_id: The user asking for coaching
         user_name: Name of the user
         match_name: Name of their match
-        conversation: Recent conversation messages
-        question: User's question to the coach
+        conversation: Recent conversation messages from the actual chat
+        question: User's current question to the coach
         user_profile: Optional profile data of the user
         match_profile: Optional profile data of the match
+        coach_history: Previous questions/answers in this coaching session
 
     Returns:
         Personalized coaching response (string)
     """
 
-    # Format recent conversation
+    # Format recent chat conversation
     formatted_convo = []
-    for msg in conversation[-30:]:  # Last 30 messages for context
+    for msg in conversation[-30:]:
         sender = user_name if msg.get('sender_id') == user_id else match_name
         formatted_convo.append(f"{sender}: {msg.get('text', '')}")
 
-    conversation_text = "\n".join(formatted_convo) if formatted_convo else "No messages yet"
+    conversation_text = "\n".join(formatted_convo) if formatted_convo else "No messages yet between you two"
+
+    # Format previous coaching conversation for context
+    coach_history = coach_history or []
+    previous_coaching = ""
+    if coach_history:
+        coaching_lines = []
+        for msg in coach_history[-10:]:  # Last 10 messages in coaching session
+            role = "You asked" if msg.get('role') == 'user' else "I said"
+            coaching_lines.append(f"{role}: {msg.get('content', '')}")
+        previous_coaching = "\n".join(coaching_lines)
 
     # Build context
-    context_parts = [f"You are privately coaching {user_name} about their conversation with {match_name}."]
+    context_parts = [f"You are privately coaching {user_name} about their match with {match_name}."]
 
     if user_profile:
         context_parts.append(f"""
@@ -116,7 +128,7 @@ async def get_coach_response(
 
     if match_profile:
         context_parts.append(f"""
-{match_name}'s Profile (public info only):
+{match_name}'s Profile:
 - Age: {match_profile.get('age', 'Unknown')}
 - Location: {match_profile.get('city', 'Unknown')}
 - Profession: {match_profile.get('profession', 'Unknown')}
@@ -125,19 +137,32 @@ async def get_coach_response(
 
     context = "\n".join(context_parts)
 
-    prompt = f"""
-{context}
+    # Build the prompt with history context
+    prompt_parts = [context]
 
-=== RECENT CONVERSATION ===
+    if conversation_text != "No messages yet between you two":
+        prompt_parts.append(f"""
+=== THEIR CHAT MESSAGES ===
 {conversation_text}
-=== END CONVERSATION ===
+=== END CHAT ===
+""")
 
-{user_name}'s question to you (PRIVATE - {match_name} cannot see this):
+    if previous_coaching:
+        prompt_parts.append(f"""
+=== OUR PREVIOUS CONVERSATION ===
+{previous_coaching}
+=== END PREVIOUS ===
+""")
+
+    prompt_parts.append(f"""
+{user_name}'s new question (PRIVATE):
 "{question}"
 
-Provide your helpful, private coaching response to {user_name}.
-Remember: Be supportive, honest, and helpful. Suggest topics, not full messages.
-"""
+Give a helpful, warm, and natural response. Remember what we discussed before if relevant.
+Be conversational - like a wise friend, not a robot. Keep it concise but insightful.
+""")
+
+    prompt = "\n".join(prompt_parts)
 
     result = await call_llm(
         system_prompt=get_coach_system_prompt(user_name),

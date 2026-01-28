@@ -49,9 +49,14 @@ def model_to_dict(obj) -> dict:
 
 # ================== Pydantic Schemas ==================
 
+class HistoryMessage(BaseModel):
+    role: str  # 'user' or 'assistant'
+    content: str
+
 class CoachQuestionRequest(BaseModel):
     match_id: str
     question: str
+    history: list[HistoryMessage] = []  # Previous conversation for context
 
 class CoachResponse(BaseModel):
     response: str
@@ -133,19 +138,19 @@ async def ask_ai_coach(
     other_profile = other_profile_result.scalar_one_or_none()
     match_name = other_profile.full_name if other_profile else "Your match"
 
-    # TODO: Get actual conversation from Firebase/DB
-    # For now, using empty list - in production, fetch from chat storage
-    conversation = []
+    # Convert history to the format expected by coach
+    coach_history = [{"role": h.role, "content": h.content} for h in request.history]
 
     try:
         response = await get_coach_response(
             user_id=str(current_user.id),
             user_name=user_name,
             match_name=match_name,
-            conversation=conversation,
+            conversation=[],  # Chat messages (not AI history)
             question=request.question,
             user_profile=model_to_dict(user_profile),
             match_profile=model_to_dict(other_profile),
+            coach_history=coach_history,  # Previous AI coach conversation
         )
 
         return CoachResponse(response=response)
