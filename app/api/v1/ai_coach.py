@@ -9,6 +9,7 @@ from sqlalchemy import select, and_, or_
 from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime
+from uuid import UUID as PyUUID
 
 from app.db.session import get_db
 from app.core.dependencies import get_current_verified_user
@@ -26,6 +27,13 @@ from app.agents.analyzer import get_user_insights
 from app.agents.coach import get_auto_insight
 
 router = APIRouter(prefix="/ai-coach", tags=["AI Coach"])
+
+
+def model_to_dict(obj) -> dict:
+    """Convert SQLAlchemy model to dict without internal attributes."""
+    if obj is None:
+        return None
+    return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
 
 
 # ================== Pydantic Schemas ==================
@@ -74,7 +82,7 @@ async def ask_ai_coach(
     match_result = await db.execute(
         select(Match).where(
             and_(
-                Match.id == request.match_id,
+                Match.id == PyUUID(request.match_id),
                 or_(
                     Match.user1_id == current_user.id,
                     Match.user2_id == current_user.id,
@@ -116,8 +124,8 @@ async def ask_ai_coach(
             match_name=match_name,
             conversation=conversation,
             question=request.question,
-            user_profile=user_profile.__dict__ if user_profile else None,
-            match_profile=other_profile.__dict__ if other_profile else None,
+            user_profile=model_to_dict(user_profile),
+            match_profile=model_to_dict(other_profile),
         )
 
         return CoachResponse(response=response)
@@ -143,7 +151,7 @@ async def get_automatic_insight(
     match_result = await db.execute(
         select(Match).where(
             and_(
-                Match.id == request.match_id,
+                Match.id == PyUUID(request.match_id),
                 or_(
                     Match.user1_id == current_user.id,
                     Match.user2_id == current_user.id,
@@ -202,12 +210,12 @@ async def analyze_profile_compatibility(
     """
     # Get both profiles
     profile_a_result = await db.execute(
-        select(Profile).where(Profile.id == request.profile_a_id)
+        select(Profile).where(Profile.id == PyUUID(request.profile_a_id))
     )
     profile_a = profile_a_result.scalar_one_or_none()
 
     profile_b_result = await db.execute(
-        select(Profile).where(Profile.id == request.profile_b_id)
+        select(Profile).where(Profile.id == PyUUID(request.profile_b_id))
     )
     profile_b = profile_b_result.scalar_one_or_none()
 
@@ -219,8 +227,8 @@ async def analyze_profile_compatibility(
 
     try:
         analysis = await analyze_compatibility(
-            profile_a=profile_a.__dict__,
-            profile_b=profile_b.__dict__,
+            profile_a=model_to_dict(profile_a),
+            profile_b=model_to_dict(profile_b),
         )
 
         return analysis
@@ -246,7 +254,7 @@ async def analyze_match_conversation(
     match_result = await db.execute(
         select(Match).where(
             and_(
-                Match.id == request.match_id,
+                Match.id == PyUUID(request.match_id),
                 or_(
                     Match.user1_id == current_user.id,
                     Match.user2_id == current_user.id,
@@ -320,7 +328,7 @@ async def analyze_safety(
     match_result = await db.execute(
         select(Match).where(
             and_(
-                Match.id == request.match_id,
+                Match.id == PyUUID(request.match_id),
                 or_(
                     Match.user1_id == current_user.id,
                     Match.user2_id == current_user.id,
@@ -357,7 +365,7 @@ async def analyze_safety(
             user_id=str(current_user.id),
             user_name=user_name,
             other_user_name=other_name,
-            other_user_profile=other_profile.__dict__ if other_profile else None,
+            other_user_profile=model_to_dict(other_profile),
         )
 
         return analysis
