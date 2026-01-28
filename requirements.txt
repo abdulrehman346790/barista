@@ -29,6 +29,10 @@ firebase-admin==6.4.0
 huggingface-hub>=0.20.0
 numpy>=1.24.0
 
+# AI Agents - OpenAI SDK with Groq/Cerebras
+openai>=1.0.0
+openai-agents>=0.0.3
+
 # HTTP Client
 httpx==0.26.0
 aiohttp==3.9.3
