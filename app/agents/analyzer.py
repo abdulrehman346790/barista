@@ -2,13 +2,13 @@
 Conversation Analyzer Agent
 Reads and analyzes chat conversations to provide insights
 NEVER writes messages - only observes and analyzes
+Uses call_llm instead of agents SDK
 """
 
-from agents import Agent
-from .config import run_with_fallback
+from .config import call_llm_json
 import json
 
-ANALYZER_INSTRUCTIONS = """
+ANALYZER_SYSTEM_PROMPT = """
 You are the Basirat Conversation Analyzer - an intelligent observer of matrimonial conversations.
 
 CRITICAL RULE: You ONLY READ and ANALYZE. You NEVER write messages for users.
@@ -103,10 +103,6 @@ IMPORTANT:
 6. Always output valid JSON only
 """
 
-analyzer_agent = Agent(
-    name="Analyzer",
-    instructions=ANALYZER_INSTRUCTIONS
-)
 
 async def analyze_conversation(
     messages: list,
@@ -152,7 +148,11 @@ Provide your analysis in JSON format.
 Remember: Private insights for each user should be helpful but different - don't reveal one user's analysis to the other.
 """
 
-    result = await run_with_fallback(analyzer_agent, prompt, use_smart=True)
+    result = await call_llm_json(
+        system_prompt=ANALYZER_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        use_smart=True
+    )
 
     # Parse JSON response
     try:
@@ -189,6 +189,7 @@ Remember: Private insights for each user should be helpful but different - don't
             "overall_assessment": "Analysis could not be completed. Please try again.",
             "raw_response": result
         }
+
 
 def get_user_insights(analysis: dict, user_key: str) -> dict:
     """

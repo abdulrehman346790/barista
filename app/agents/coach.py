@@ -2,13 +2,13 @@
 Relationship Coach Agent
 Provides PRIVATE coaching to individual users
 Each user gets their own personalized, confidential advice
+Uses call_llm instead of agents SDK
 """
 
-from agents import Agent
-from .config import run_with_fallback
-import json
+from .config import call_llm
 
-def get_coach_instructions(user_name: str) -> str:
+
+def get_coach_system_prompt(user_name: str) -> str:
     """Generate personalized coach instructions for a specific user"""
     return f"""
 You are a PRIVATE Relationship Coach for {user_name} on Basirat - a Muslim matrimonial app.
@@ -70,6 +70,7 @@ Respond naturally in conversational paragraphs. Be helpful and specific to their
 If they ask something you can't answer, be honest about it.
 """
 
+
 async def get_coach_response(
     user_id: str,
     user_name: str,
@@ -94,12 +95,6 @@ async def get_coach_response(
     Returns:
         Personalized coaching response (string)
     """
-
-    # Create personalized coach for this user
-    coach_agent = Agent(
-        name=f"Coach_{user_id}",
-        instructions=get_coach_instructions(user_name)
-    )
 
     # Format recent conversation
     formatted_convo = []
@@ -144,7 +139,11 @@ Provide your helpful, private coaching response to {user_name}.
 Remember: Be supportive, honest, and helpful. Suggest topics, not full messages.
 """
 
-    result = await run_with_fallback(coach_agent, prompt, use_smart=True)
+    result = await call_llm(
+        system_prompt=get_coach_system_prompt(user_name),
+        user_prompt=prompt,
+        use_smart=True
+    )
     return result
 
 
@@ -170,15 +169,12 @@ async def get_auto_insight(
         Brief, helpful insight (1-2 sentences)
     """
 
-    coach_agent = Agent(
-        name=f"AutoCoach_{user_id}",
-        instructions=f"""
+    auto_coach_prompt = f"""
 You provide brief, helpful tips to {user_name} during their conversation.
 Keep responses to 1-2 short sentences maximum.
 Be encouraging and insightful.
 Never write messages for them - just give quick tips or observations.
 """
-    )
 
     # Get last few messages for context
     recent = conversation[-10:] if len(conversation) > 10 else conversation
@@ -199,5 +195,9 @@ Give {user_name} a brief, helpful tip (1-2 sentences only). Examples:
 Your brief tip:
 """
 
-    result = await run_with_fallback(coach_agent, prompt, use_smart=False)  # Fast model for quick tips
+    result = await call_llm(
+        system_prompt=auto_coach_prompt,
+        user_prompt=prompt,
+        use_smart=False  # Fast model for quick tips
+    )
     return result.strip()

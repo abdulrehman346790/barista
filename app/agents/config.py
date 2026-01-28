@@ -4,8 +4,6 @@ Uses Groq (primary) and Cerebras (backup) for FREE inference
 Combined: 28,800 requests/day
 """
 
-from agents import Agent, Runner, OpenAIChatCompletionsModel
-from agents.run import RunConfig
 from openai import AsyncOpenAI
 import os
 from dotenv import load_dotenv
@@ -35,8 +33,8 @@ cerebras_client = AsyncOpenAI(
 # Model Configuration
 MODELS = {
     "groq": {
-        "fast": "llama-3.1-8b-instant",      # Quick tasks, 14,400/day
-        "smart": "llama-3.3-70b-versatile",   # Complex analysis, 1,000/day
+        "fast": "llama-3.1-8b-instant",      # Quick tasks
+        "smart": "llama-3.3-70b-versatile",   # Complex analysis
     },
     "cerebras": {
         "fast": "llama3.1-8b",
@@ -44,56 +42,68 @@ MODELS = {
     }
 }
 
-def get_model(use_smart: bool = False, provider: str = "groq"):
-    """Get the appropriate model based on task complexity"""
-    client = groq_client if provider == "groq" else cerebras_client
-    model_type = "smart" if use_smart else "fast"
-    model_name = MODELS[provider][model_type]
 
-    return OpenAIChatCompletionsModel(
-        model=model_name,
-        openai_client=client
-    )
-
-def get_config(use_smart: bool = False, provider: str = "groq"):
-    """Get RunConfig for agent execution"""
-    client = groq_client if provider == "groq" else cerebras_client
-    return RunConfig(
-        model=get_model(use_smart, provider),
-        model_provider=client,
-        tracing_disabled=True
-    )
-
-async def run_with_fallback(agent: Agent, prompt: str, use_smart: bool = False):
+async def call_llm(
+    system_prompt: str,
+    user_prompt: str,
+    use_smart: bool = False,
+    max_tokens: int = 2000,
+    temperature: float = 0.7
+) -> str:
     """
-    Run agent with automatic fallback to Cerebras if Groq fails.
+    Call LLM with automatic fallback to Cerebras if Groq fails.
     This ensures high availability with 28,800 total requests/day.
     """
-    try:
-        # Try Groq first (faster)
-        config = get_config(use_smart, "groq")
-        result = await Runner.run(agent, prompt, run_config=config)
-        return result.final_output
-    except Exception as e:
-        print(f"⚠️ Groq failed: {e}")
-        print("🔄 Falling back to Cerebras...")
-        try:
-            # Fallback to Cerebras
-            config = get_config(use_smart, "cerebras")
-            result = await Runner.run(agent, prompt, run_config=config)
-            return result.final_output
-        except Exception as e2:
-            print(f"❌ Cerebras also failed: {e2}")
-            raise Exception(f"Both AI providers failed. Groq: {e}, Cerebras: {e2}")
 
-def run_sync_with_fallback(agent: Agent, prompt: str, use_smart: bool = False):
-    """Synchronous version for non-async contexts"""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    # Try Groq first
     try:
-        config = get_config(use_smart, "groq")
-        result = Runner.run_sync(agent, prompt, run_config=config)
-        return result.final_output
+        model = MODELS["groq"]["smart" if use_smart else "fast"]
+        response = await groq_client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        print(f"⚠️ Groq failed: {e}, falling back to Cerebras...")
-        config = get_config(use_smart, "cerebras")
-        result = Runner.run_sync(agent, prompt, run_config=config)
-        return result.final_output
+        print(f"Groq failed: {e}, falling back to Cerebras...")
+
+    # Fallback to Cerebras
+    try:
+        model = MODELS["cerebras"]["smart" if use_smart else "fast"]
+        response = await cerebras_client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return response.choices[0].message.content
+    except Exception as e2:
+        print(f"Cerebras also failed: {e2}")
+        raise Exception(f"Both AI providers failed. Groq error, Cerebras: {e2}")
+
+
+async def call_llm_json(
+    system_prompt: str,
+    user_prompt: str,
+    use_smart: bool = False,
+    max_tokens: int = 2000,
+) -> str:
+    """
+    Call LLM expecting JSON response.
+    """
+    # Add JSON instruction to system prompt
+    json_system = system_prompt + "\n\nIMPORTANT: Respond with valid JSON only. No markdown, no extra text."
+
+    return await call_llm(
+        system_prompt=json_system,
+        user_prompt=user_prompt,
+        use_smart=use_smart,
+        max_tokens=max_tokens,
+        temperature=0.3  # Lower temperature for more consistent JSON
+    )

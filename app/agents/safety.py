@@ -1,13 +1,13 @@
 """
 Safety Agent
 Protects users by detecting red flags, scams, and inappropriate behavior
+Uses call_llm instead of agents SDK
 """
 
-from agents import Agent
-from .config import run_with_fallback
+from .config import call_llm, call_llm_json
 import json
 
-SAFETY_INSTRUCTIONS = """
+SAFETY_SYSTEM_PROMPT = """
 You are the Basirat Safety Guardian - protecting users on a Muslim matrimonial app.
 
 YOUR MISSION:
@@ -91,10 +91,6 @@ IMPORTANT GUIDELINES:
 7. Always output valid JSON only
 """
 
-safety_agent = Agent(
-    name="Safety",
-    instructions=SAFETY_INSTRUCTIONS
-)
 
 async def check_safety(
     messages: list,
@@ -154,7 +150,11 @@ Look for any red flags, scam patterns, or concerning behavior from {other_user_n
 Also note positive signs if the conversation seems healthy.
 """
 
-    result = await run_with_fallback(safety_agent, prompt, use_smart=True)
+    result = await call_llm_json(
+        system_prompt=SAFETY_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        use_smart=True
+    )
 
     # Parse JSON response
     try:
@@ -201,9 +201,7 @@ async def quick_message_check(message_text: str, sender_name: str) -> dict:
         Quick safety assessment
     """
 
-    quick_agent = Agent(
-        name="QuickSafety",
-        instructions="""
+    quick_safety_prompt = """
 You quickly assess if a single message contains obvious red flags.
 Only flag CLEAR violations, not ambiguous content.
 
@@ -216,12 +214,15 @@ Check for:
 Respond with JSON:
 {"flagged": true/false, "reason": "brief reason if flagged", "severity": "low/medium/high/critical"}
 """
-    )
 
     prompt = f'{sender_name} sent: "{message_text}"\n\nQuick safety check:'
 
     try:
-        result = await run_with_fallback(quick_agent, prompt, use_smart=False)
+        result = await call_llm_json(
+            system_prompt=quick_safety_prompt,
+            user_prompt=prompt,
+            use_smart=False
+        )
         result = result.strip()
         if result.startswith("```"):
             result = result.split("```")[1]

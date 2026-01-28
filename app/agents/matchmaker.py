@@ -1,13 +1,13 @@
 """
 Matchmaker Agent
 Analyzes profile compatibility and suggests matches
+Uses call_llm instead of agents SDK
 """
 
-from agents import Agent
-from .config import run_with_fallback
+from .config import call_llm_json
 import json
 
-MATCHMAKER_INSTRUCTIONS = """
+MATCHMAKER_SYSTEM_PROMPT = """
 You are the Basirat Matchmaker Agent - an intelligent Islamic matrimonial compatibility analyzer.
 
 YOUR ROLE:
@@ -83,10 +83,6 @@ IMPORTANT RULES:
 5. Always output valid JSON only
 """
 
-matchmaker_agent = Agent(
-    name="Matchmaker",
-    instructions=MATCHMAKER_INSTRUCTIONS
-)
 
 async def analyze_compatibility(profile_a: dict, profile_b: dict) -> dict:
     """
@@ -155,7 +151,11 @@ Bio: {profile_b.get('bio', 'No bio provided')}
 Provide your compatibility analysis in JSON format.
 """
 
-    result = await run_with_fallback(matchmaker_agent, prompt, use_smart=True)
+    result = await call_llm_json(
+        system_prompt=MATCHMAKER_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        use_smart=True
+    )
 
     # Parse JSON response
     try:
@@ -187,6 +187,7 @@ Provide your compatibility analysis in JSON format.
             "advice": "Take time to get to know each other.",
             "raw_response": result
         }
+
 
 def calculate_age(date_of_birth: str) -> int:
     """Calculate age from date of birth string"""
