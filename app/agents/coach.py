@@ -79,7 +79,8 @@ async def get_coach_response(
     question: str,
     user_profile: dict = None,
     match_profile: dict = None,
-    coach_history: list = None
+    coach_history: list = None,
+    rag_context: str = None
 ) -> str:
     """
     Get personalized coaching response for a user's question.
@@ -88,23 +89,24 @@ async def get_coach_response(
         user_id: The user asking for coaching
         user_name: Name of the user
         match_name: Name of their match
-        conversation: Recent conversation messages from the actual chat
+        conversation: Recent conversation messages from the actual chat (legacy)
         question: User's current question to the coach
         user_profile: Optional profile data of the user
         match_profile: Optional profile data of the match
         coach_history: Previous questions/answers in this coaching session
+        rag_context: RAG-retrieved conversation context (NEW)
 
     Returns:
         Personalized coaching response (string)
     """
 
-    # Format recent chat conversation
+    # Format recent chat conversation (legacy - used if no RAG context)
     formatted_convo = []
     for msg in conversation[-30:]:
         sender = user_name if msg.get('sender_id') == user_id else match_name
         formatted_convo.append(f"{sender}: {msg.get('text', '')}")
 
-    conversation_text = "\n".join(formatted_convo) if formatted_convo else "No messages yet between you two"
+    conversation_text = "\n".join(formatted_convo) if formatted_convo else ""
 
     # Format previous coaching conversation for context
     coach_history = coach_history or []
@@ -140,12 +142,21 @@ async def get_coach_response(
     # Build the prompt with history context
     prompt_parts = [context]
 
-    if conversation_text != "No messages yet between you two":
+    # Use RAG context if available, otherwise fall back to legacy conversation
+    if rag_context and rag_context.strip():
+        prompt_parts.append(f"""
+=== CONVERSATION CONTEXT (from their chat history) ===
+{rag_context}
+=== END CONTEXT ===
+""")
+    elif conversation_text:
         prompt_parts.append(f"""
 === THEIR CHAT MESSAGES ===
 {conversation_text}
 === END CHAT ===
 """)
+    else:
+        prompt_parts.append("(No chat history available yet between them)")
 
     if previous_coaching:
         prompt_parts.append(f"""
@@ -160,6 +171,7 @@ async def get_coach_response(
 
 Give a helpful, warm, and natural response. Remember what we discussed before if relevant.
 Be conversational - like a wise friend, not a robot. Keep it concise but insightful.
+Use the conversation context above to give specific, relevant advice.
 """)
 
     prompt = "\n".join(prompt_parts)

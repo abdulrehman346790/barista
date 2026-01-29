@@ -1,12 +1,12 @@
 """
 AI Coach Endpoints
-New agent-based AI system using Groq/Cerebras
+New agent-based AI system using Groq/Cerebras with RAG support
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 from datetime import datetime
 from uuid import UUID as PyUUID
@@ -26,6 +26,14 @@ from app.agents import (
 )
 from app.agents.analyzer import get_user_insights
 from app.agents.coach import get_auto_insight
+
+# Import RAG service
+from app.services.rag_service import (
+    index_chat_message,
+    index_chat_history,
+    get_relevant_context,
+    format_context_for_ai,
+)
 
 router = APIRouter(prefix="/ai-coach", tags=["AI Coach"])
 
@@ -80,6 +88,25 @@ class ConversationAnalysisRequest(BaseModel):
 class SafetyCheckRequest(BaseModel):
     match_id: str
     messages: list
+
+
+# RAG-related schemas
+class ChatMessage(BaseModel):
+    sender_id: str
+    sender_name: str
+    content: str
+    timestamp: Optional[str] = None
+
+class IndexMessagesRequest(BaseModel):
+    match_id: str
+    messages: List[ChatMessage]
+
+class IndexMessageRequest(BaseModel):
+    match_id: str
+    sender_id: str
+    sender_name: str
+    content: str
+    timestamp: Optional[str] = None
 
 
 # ================== Endpoints ==================
@@ -141,16 +168,30 @@ async def ask_ai_coach(
     # Convert history to the format expected by coach
     coach_history = [{"role": h.role, "content": h.content} for h in request.history]
 
+    # Get RAG context for this match
+    try:
+        rag_context = get_relevant_context(
+            match_id=request.match_id,
+            query=request.question,
+            top_k=5,
+            include_recent=15
+        )
+        conversation_context = format_context_for_ai(rag_context)
+    except Exception as e:
+        print(f"RAG context retrieval warning: {e}")
+        conversation_context = ""
+
     try:
         response = await get_coach_response(
             user_id=str(current_user.id),
             user_name=user_name,
             match_name=match_name,
-            conversation=[],  # Chat messages (not AI history)
+            conversation=[],  # Legacy param - kept for compatibility
             question=request.question,
             user_profile=model_to_dict(user_profile),
             match_profile=model_to_dict(other_profile),
             coach_history=coach_history,  # Previous AI coach conversation
+            rag_context=conversation_context,  # NEW: RAG context
         )
 
         return CoachResponse(response=response)
@@ -448,3 +489,189 @@ async def ai_health_check():
         status_report["overall"] = "degraded"
 
     return status_report
+
+
+# ================== RAG Endpoints ==================
+
+@router.post("/rag/index-message")
+async def index_single_message(
+    request: IndexMessageRequest,
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Index a single chat message into RAG for context retrieval.
+    Call this when a new message is sent/received.
+    """
+    # Verify user is part of this match
+    try:
+        match_uuid = PyUUID(request.match_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid match_id format.",
+        )
+
+    match_result = await db.execute(
+        select(Match).where(
+            and_(
+                Match.id == match_uuid,
+                or_(
+                    Match.user1_id == current_user.id,
+                    Match.user2_id == current_user.id,
+                ),
+            )
+        )
+    )
+    match = match_result.scalar_one_or_none()
+
+    if not match:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Match not found.",
+        )
+
+    try:
+        added = index_chat_message(
+            match_id=request.match_id,
+            sender_id=request.sender_id,
+            sender_name=request.sender_name,
+            content=request.content,
+            timestamp=request.timestamp,
+        )
+
+        return {
+            "success": True,
+            "added": added,
+            "message": "Message indexed" if added else "Message already exists"
+        }
+
+    except Exception as e:
+        print(f"RAG index error: {e}")
+        # Don't fail the request - RAG is optional enhancement
+        return {
+            "success": False,
+            "added": False,
+            "message": f"RAG indexing failed: {str(e)}"
+        }
+
+
+@router.post("/rag/index-history")
+async def index_chat_history_endpoint(
+    request: IndexMessagesRequest,
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Index multiple chat messages at once.
+    Call this to sync existing chat history into RAG.
+    """
+    # Verify user is part of this match
+    try:
+        match_uuid = PyUUID(request.match_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid match_id format.",
+        )
+
+    match_result = await db.execute(
+        select(Match).where(
+            and_(
+                Match.id == match_uuid,
+                or_(
+                    Match.user1_id == current_user.id,
+                    Match.user2_id == current_user.id,
+                ),
+            )
+        )
+    )
+    match = match_result.scalar_one_or_none()
+
+    if not match:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Match not found.",
+        )
+
+    try:
+        # Convert Pydantic models to dicts
+        messages = [msg.dict() for msg in request.messages]
+        count = index_chat_history(request.match_id, messages)
+
+        return {
+            "success": True,
+            "indexed_count": count,
+            "total_sent": len(request.messages),
+            "message": f"Indexed {count} new messages"
+        }
+
+    except Exception as e:
+        print(f"RAG batch index error: {e}")
+        return {
+            "success": False,
+            "indexed_count": 0,
+            "message": f"RAG indexing failed: {str(e)}"
+        }
+
+
+@router.get("/rag/context/{match_id}")
+async def get_rag_context(
+    match_id: str,
+    query: str = "conversation context",
+    current_user: User = Depends(get_current_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get RAG context for a match.
+    Useful for debugging or showing conversation insights.
+    """
+    # Verify user is part of this match
+    try:
+        match_uuid = PyUUID(match_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid match_id format.",
+        )
+
+    match_result = await db.execute(
+        select(Match).where(
+            and_(
+                Match.id == match_uuid,
+                or_(
+                    Match.user1_id == current_user.id,
+                    Match.user2_id == current_user.id,
+                ),
+            )
+        )
+    )
+    match = match_result.scalar_one_or_none()
+
+    if not match:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Match not found.",
+        )
+
+    try:
+        context = get_relevant_context(
+            match_id=match_id,
+            query=query,
+            top_k=5,
+            include_recent=10
+        )
+
+        return {
+            "success": True,
+            "context": context,
+            "formatted": format_context_for_ai(context)
+        }
+
+    except Exception as e:
+        print(f"RAG context error: {e}")
+        return {
+            "success": False,
+            "context": None,
+            "message": f"Failed to get context: {str(e)}"
+        }

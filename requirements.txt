@@ -32,6 +32,10 @@ numpy>=1.24.0
 # AI - OpenAI SDK for Groq/Cerebras API calls
 openai>=1.0.0
 
+# RAG System - Vector Search
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.0
+
 # HTTP Client
 httpx==0.26.0
 aiohttp==3.9.3
