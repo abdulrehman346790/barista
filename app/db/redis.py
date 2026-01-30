@@ -97,6 +97,96 @@ class RedisService:
         self.client.incr(key)
         return True, settings.SWIPE_LIMIT_PER_DAY - current_count - 1
 
+    # ==================== Auth Rate Limiting ====================
+
+    async def check_rate_limit(
+        self,
+        identifier: str,
+        action: str,
+        max_attempts: int,
+        window_seconds: int
+    ) -> tuple[bool, int, int]:
+        """
+        Generic rate limiter for any action.
+
+        Args:
+            identifier: Unique identifier (IP, phone, user_id)
+            action: Action type (login, register, otp_verify)
+            max_attempts: Maximum attempts allowed
+            window_seconds: Time window in seconds
+
+        Returns:
+            (is_allowed, remaining_attempts, seconds_until_reset)
+        """
+        key = f"ratelimit:{action}:{identifier}"
+        count = self.client.get(key)
+        ttl = self.client.ttl(key)
+
+        if count is None:
+            # First attempt
+            self.client.setex(key, window_seconds, "1")
+            return True, max_attempts - 1, window_seconds
+
+        current_count = int(count)
+        if current_count >= max_attempts:
+            return False, 0, ttl if ttl > 0 else window_seconds
+
+        self.client.incr(key)
+        return True, max_attempts - current_count - 1, ttl if ttl > 0 else window_seconds
+
+    async def check_login_rate_limit(self, identifier: str) -> tuple[bool, int, int]:
+        """
+        Check login rate limit.
+        5 attempts per 15 minutes per IP/phone.
+        """
+        return await self.check_rate_limit(
+            identifier=identifier,
+            action="login",
+            max_attempts=5,
+            window_seconds=900  # 15 minutes
+        )
+
+    async def check_register_rate_limit(self, ip_address: str) -> tuple[bool, int, int]:
+        """
+        Check registration rate limit.
+        3 registrations per hour per IP.
+        """
+        return await self.check_rate_limit(
+            identifier=ip_address,
+            action="register",
+            max_attempts=3,
+            window_seconds=3600  # 1 hour
+        )
+
+    async def check_otp_rate_limit(self, phone: str) -> tuple[bool, int, int]:
+        """
+        Check OTP verification rate limit.
+        5 attempts per 10 minutes per phone.
+        """
+        return await self.check_rate_limit(
+            identifier=phone,
+            action="otp_verify",
+            max_attempts=5,
+            window_seconds=600  # 10 minutes
+        )
+
+    async def check_otp_resend_rate_limit(self, phone: str) -> tuple[bool, int, int]:
+        """
+        Check OTP resend rate limit.
+        3 resends per 30 minutes per phone.
+        """
+        return await self.check_rate_limit(
+            identifier=phone,
+            action="otp_resend",
+            max_attempts=3,
+            window_seconds=1800  # 30 minutes
+        )
+
+    async def reset_rate_limit(self, identifier: str, action: str) -> None:
+        """Reset rate limit for an identifier (e.g., after successful login)."""
+        key = f"ratelimit:{action}:{identifier}"
+        self.client.delete(key)
+
     # ==================== Caching ====================
 
     async def cache_discover_queue(self, user_id: str, profile_ids: list[str]) -> None:

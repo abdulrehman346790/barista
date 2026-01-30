@@ -7,6 +7,11 @@ from app.api.v1.router import api_router
 from app.db.session import init_db, close_db
 from app.db.redis import init_redis, close_redis
 from app.core.firebase import init_firebase
+from app.core.middleware import (
+    SecurityHeadersMiddleware,
+    RequestLoggingMiddleware,
+    RequestSizeLimitMiddleware,
+)
 import app.models  # Register models for create_all
 
 
@@ -36,14 +41,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
+# CORS middleware - Restricted to allowed origins only
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure properly in production
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "Accept", "Origin"],
+    expose_headers=["X-Request-ID"],
+    max_age=600,  # Cache preflight requests for 10 minutes
 )
+
+# Security headers middleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Request logging middleware
+app.add_middleware(RequestLoggingMiddleware)
+
+# Request size limit middleware (10 MB max)
+app.add_middleware(RequestSizeLimitMiddleware)
 
 # Include API routes
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
@@ -51,7 +67,7 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
 @app.get("/")
 async def root():
-    """Health check endpoint."""
+    """Basic health check endpoint."""
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
@@ -61,10 +77,70 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Detailed health check."""
-    return {
+    """
+    Detailed health check that actually verifies connectivity.
+    Returns status of all critical services.
+    """
+    from app.db.session import async_session
+    from app.db.redis import get_redis
+
+    health_status = {
         "status": "healthy",
-        "database": "connected",
-        "redis": "connected",
-        "firebase": "initialized",
+        "services": {
+            "database": {"status": "unknown", "latency_ms": None},
+            "redis": {"status": "unknown", "latency_ms": None},
+            "firebase": {"status": "unknown"},
+        },
     }
+
+    import time
+
+    # Check Database
+    try:
+        start = time.time()
+        async with async_session() as session:
+            from sqlalchemy import text
+            await session.execute(text("SELECT 1"))
+        latency = round((time.time() - start) * 1000, 2)
+        health_status["services"]["database"] = {
+            "status": "healthy",
+            "latency_ms": latency,
+        }
+    except Exception as e:
+        health_status["services"]["database"] = {
+            "status": "unhealthy",
+            "error": str(e)[:100],
+        }
+        health_status["status"] = "degraded"
+
+    # Check Redis
+    try:
+        start = time.time()
+        redis = get_redis()
+        redis.ping()
+        latency = round((time.time() - start) * 1000, 2)
+        health_status["services"]["redis"] = {
+            "status": "healthy",
+            "latency_ms": latency,
+        }
+    except Exception as e:
+        health_status["services"]["redis"] = {
+            "status": "unhealthy",
+            "error": str(e)[:100],
+        }
+        health_status["status"] = "degraded"
+
+    # Check Firebase (just check if initialized)
+    try:
+        from app.core.firebase import firebase_service
+        if firebase_service and firebase_service.db:
+            health_status["services"]["firebase"] = {"status": "initialized"}
+        else:
+            health_status["services"]["firebase"] = {"status": "not_configured"}
+    except Exception as e:
+        health_status["services"]["firebase"] = {
+            "status": "error",
+            "error": str(e)[:100],
+        }
+
+    return health_status

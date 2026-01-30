@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -22,14 +22,33 @@ from app.schemas.user import (
     RefreshTokenRequest,
     UserResponse,
 )
+from app.config import settings
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+def get_client_ip(request: Request) -> str:
+    """Extract client IP from request, handling proxies."""
+    # Check X-Forwarded-For header (for proxied requests)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # First IP in the list is the client's IP
+        return forwarded_for.split(",")[0].strip()
+
+    # Check X-Real-IP header
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+
+    # Fall back to direct client IP
+    return request.client.host if request.client else "unknown"
+
+
 @router.post("/register", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def register(
     user_data: UserRegister,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     redis: RedisService = Depends(get_redis_service),
 ):
@@ -37,7 +56,19 @@ async def register(
     Register a new user.
     Sends OTP to phone for verification.
     If user exists but is not verified, allow re-registration.
+    Rate limited: 3 registrations per hour per IP.
     """
+    # Rate limiting check
+    client_ip = get_client_ip(request)
+    is_allowed, remaining, reset_seconds = await redis.check_register_rate_limit(client_ip)
+
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many registration attempts. Try again in {reset_seconds // 60} minutes.",
+            headers={"Retry-After": str(reset_seconds)},
+        )
+
     # Check if phone already exists
     result = await db.execute(select(User).where(User.phone == user_data.phone))
     existing_user = result.scalar_one_or_none()
@@ -81,15 +112,20 @@ async def register(
     otp = generate_otp()
     await redis.store_otp(user_data.phone, otp)
 
-    # In production, send OTP via SMS
-    # For development, return it in response
-    return {
+    # In production, send OTP via SMS service (Twilio, etc.)
+    # TODO: Implement SMS sending
+
+    response = {
         "message": "Registration successful. Please verify your phone.",
         "user_id": str(user.id),
         "otp_sent": True,
-        # Remove this in production!
-        "debug_otp": otp,
     }
+
+    # Only include debug OTP in development mode
+    if settings.DEBUG and settings.ENVIRONMENT == "development":
+        response["debug_otp"] = otp
+
+    return response
 
 
 @router.post("/verify-otp", response_model=TokenResponse)
@@ -101,13 +137,24 @@ async def verify_otp(
     """
     Verify OTP and mark user as verified.
     Returns access and refresh tokens.
+    Rate limited: 5 attempts per 10 minutes per phone.
     """
+    # Rate limiting check
+    is_allowed, remaining, reset_seconds = await redis.check_otp_rate_limit(otp_data.phone)
+
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many OTP verification attempts. Try again in {reset_seconds // 60} minutes.",
+            headers={"Retry-After": str(reset_seconds)},
+        )
+
     # Verify OTP
     is_valid = await redis.verify_otp(otp_data.phone, otp_data.otp)
     if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired OTP",
+            detail=f"Invalid or expired OTP. {remaining} attempts remaining.",
         )
 
     # Get user
@@ -140,13 +187,36 @@ async def verify_otp(
 @router.post("/login", response_model=TokenResponse)
 async def login(
     login_data: UserLogin,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     redis: RedisService = Depends(get_redis_service),
 ):
     """
     Login with phone and password.
     Returns access and refresh tokens.
+    Rate limited: 5 attempts per 15 minutes per phone/IP.
     """
+    # Rate limiting check - by phone number
+    is_allowed, remaining, reset_seconds = await redis.check_login_rate_limit(login_data.phone)
+
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many login attempts. Try again in {reset_seconds // 60} minutes.",
+            headers={"Retry-After": str(reset_seconds)},
+        )
+
+    # Also check by IP to prevent distributed attacks
+    client_ip = get_client_ip(request)
+    ip_allowed, _, ip_reset = await redis.check_login_rate_limit(f"ip:{client_ip}")
+
+    if not ip_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many login attempts from this IP. Try again in {ip_reset // 60} minutes.",
+            headers={"Retry-After": str(ip_reset)},
+        )
+
     # Get user
     result = await db.execute(select(User).where(User.phone == login_data.phone))
     user = result.scalar_one_or_none()
@@ -154,7 +224,7 @@ async def login(
     if not user or not verify_password(login_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid phone or password",
+            detail=f"Invalid phone or password. {remaining} attempts remaining.",
         )
 
     if not user.is_active:
@@ -162,6 +232,10 @@ async def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is deactivated",
         )
+
+    # Reset rate limits on successful login
+    await redis.reset_rate_limit(login_data.phone, "login")
+    await redis.reset_rate_limit(f"ip:{client_ip}", "login")
 
     # Generate tokens
     access_token = create_access_token(data={"sub": str(user.id)})
@@ -239,7 +313,18 @@ async def resend_otp(
 ):
     """
     Resend OTP to phone number.
+    Rate limited: 3 resends per 30 minutes per phone.
     """
+    # Rate limiting check
+    is_allowed, remaining, reset_seconds = await redis.check_otp_resend_rate_limit(phone)
+
+    if not is_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many OTP resend requests. Try again in {reset_seconds // 60} minutes.",
+            headers={"Retry-After": str(reset_seconds)},
+        )
+
     # Check if user exists
     result = await db.execute(select(User).where(User.phone == phone))
     user = result.scalar_one_or_none()
@@ -260,9 +345,16 @@ async def resend_otp(
     otp = generate_otp()
     await redis.store_otp(phone, otp)
 
-    # In production, send OTP via SMS
-    return {
+    # In production, send OTP via SMS service (Twilio, etc.)
+    # TODO: Implement SMS sending
+
+    response = {
         "message": "OTP sent successfully",
-        # Remove this in production!
-        "debug_otp": otp,
+        "remaining_resends": remaining,
     }
+
+    # Only include debug OTP in development mode
+    if settings.DEBUG and settings.ENVIRONMENT == "development":
+        response["debug_otp"] = otp
+
+    return response

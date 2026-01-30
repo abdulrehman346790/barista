@@ -5,6 +5,33 @@ from uuid import UUID
 import re
 
 
+# ==================== Data Masking Utilities ====================
+
+def mask_phone(phone: str) -> str:
+    """
+    Mask phone number to show only first 4 and last 2 digits.
+    +923212941320 -> +9232*****20
+    """
+    if not phone or len(phone) < 8:
+        return phone
+    # Keep country code + first 2 digits, mask middle, show last 2
+    visible_start = 5 if phone.startswith("+") else 4
+    return phone[:visible_start] + "*" * (len(phone) - visible_start - 2) + phone[-2:]
+
+
+def mask_email(email: str) -> str:
+    """
+    Mask email to show only first 2 chars and domain.
+    example@gmail.com -> ex****@gmail.com
+    """
+    if not email or "@" not in email:
+        return email
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        return f"{local[0]}****@{domain}"
+    return f"{local[:2]}****@{domain}"
+
+
 # ==================== Auth Schemas ====================
 
 class UserRegister(BaseModel):
@@ -150,7 +177,7 @@ class ProfilePublic(BaseModel):
 # ==================== User Response ====================
 
 class UserResponse(BaseModel):
-    """Schema for user response."""
+    """Schema for user response - shows full data to the user themselves."""
     id: UUID
     phone: str
     email: Optional[str]
@@ -161,3 +188,25 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class UserResponseMasked(BaseModel):
+    """Schema for user response with masked sensitive data - for other users."""
+    id: UUID
+    phone_masked: str
+    email_masked: Optional[str]
+    is_verified: bool
+    created_at: datetime
+    profile: Optional[ProfilePublic] = None
+
+    @classmethod
+    def from_user(cls, user, profile_public: Optional[ProfilePublic] = None):
+        """Create masked response from User model."""
+        return cls(
+            id=user.id,
+            phone_masked=mask_phone(user.phone),
+            email_masked=mask_email(user.email) if user.email else None,
+            is_verified=user.is_verified,
+            created_at=user.created_at,
+            profile=profile_public,
+        )
